@@ -44,7 +44,7 @@ if [ -f "$CONFIG" ]; then
         cat << 'EOF'
   "custom/claude-limits": {
     "exec": "$HOME/.config/waybar/scripts/claude-limits.sh",
-    "interval": 60,
+    "interval": 300,
     "return-type": "json",
     "format": "{}",
     "tooltip": true
