@@ -1,36 +1,38 @@
-# claude-limits-waybar
+# limits-waybar
 
-Show your Claude Code rate limits in waybar. Displays 5-hour utilization % and hours until reset.
+Show your Claude Code and Codex rate limits in Waybar. Displays 5-hour utilization and time until reset for each tool.
 
 ```
-14%:2h
+C14%:2h O0%:4h
 ```
 
-Hover for tooltip with both 5h and 7d utilization.
+Hover for a tooltip with both 5h and 7d utilization for Claude and Codex.
 
 ## How it works
 
-Reads your Claude Code OAuth credentials from `~/.claude/.credentials.json` and calls the Anthropic usage API (`/api/oauth/usage`) to get your actual rate limit utilization. Caches the response for 60 seconds.
+- Claude Code: reads your OAuth credentials from `~/.claude/.credentials.json` and calls the Anthropic usage API (`/api/oauth/usage`). Responses are cached for 5 minutes.
+- Codex: reads the latest `rate_limits` snapshot from your local Codex session logs under `~/.codex/sessions`.
 
 ## Requirements
 
 - [waybar](https://github.com/Alexays/Waybar)
-- [Claude Code](https://github.com/anthropics/claude-code) logged in via OAuth
+- [Claude Code](https://github.com/anthropics/claude-code) logged in via OAuth for Claude limits
+- [Codex](https://openai.com/codex/) for Codex limits
 - `curl` and `jq`
 
 ## Install
 
 ```bash
-git clone https://github.com/backmeupplz/claude-limits-waybar.git
-cd claude-limits-waybar
+git clone https://github.com/backmeupplz/limits-waybar.git
+cd limits-waybar
 bash install.sh
 ```
 
-Then add `"custom/claude-limits"` to your waybar modules and add the module definition to your `config.jsonc`:
+Then add `"custom/limits-waybar"` to your Waybar modules and add the module definition to your `config.jsonc`:
 
 ```jsonc
-"custom/claude-limits": {
-  "exec": "$HOME/.config/waybar/scripts/claude-limits.sh",
+"custom/limits-waybar": {
+  "exec": "$HOME/.config/waybar/scripts/limits-waybar.sh",
   "interval": 60,
   "return-type": "json",
   "format": "{}",
@@ -38,15 +40,17 @@ Then add `"custom/claude-limits"` to your waybar modules and add the module defi
 }
 ```
 
-Restart waybar.
+If you already use the legacy `custom/claude-limits` module, rerun `install.sh` and it will keep working with the updated script.
+
+Restart Waybar.
 
 ## Manual install
 
-Copy `claude-limits.sh` to `~/.config/waybar/scripts/`, make it executable, and add the module config above to your waybar config.
+Copy `limits-waybar.sh` to `~/.config/waybar/scripts/`, make it executable, and add the module config above to your Waybar config.
 
-## API response
+## Claude API response
 
-The script calls `https://api.anthropic.com/api/oauth/usage` which returns:
+The Claude part calls `https://api.anthropic.com/api/oauth/usage`, which returns:
 
 ```json
 {
