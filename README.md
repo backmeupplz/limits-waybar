@@ -3,7 +3,7 @@
 Show your Claude Code and Codex rate limits in Waybar. Displays 5-hour utilization and time until reset for each tool.
 
 ```
-C14%:2h O0%:4h
+14%:2h 0%:4h
 ```
 
 Hover for a tooltip with both 5h and 7d utilization for Claude and Codex.
@@ -11,13 +11,13 @@ Hover for a tooltip with both 5h and 7d utilization for Claude and Codex.
 ## How it works
 
 - Claude Code: reads your OAuth credentials from `~/.claude/.credentials.json` and calls the Anthropic usage API (`/api/oauth/usage`). Responses are cached for 5 minutes.
-- Codex: reads the latest `rate_limits` snapshot from your local Codex session logs under `~/.codex/sessions`.
+- Codex: reads your ChatGPT auth from `~/.codex/auth.json` and polls the Codex usage endpoint (`/backend-api/wham/usage`). Responses are cached for 10 minutes.
 
 ## Requirements
 
 - [waybar](https://github.com/Alexays/Waybar)
 - [Claude Code](https://github.com/anthropics/claude-code) logged in via OAuth for Claude limits
-- [Codex](https://openai.com/codex/) for Codex limits
+- [Codex](https://openai.com/codex/) logged in with ChatGPT auth for Codex limits
 - `curl` and `jq`
 
 ## Install
@@ -33,7 +33,7 @@ Then add `"custom/limits-waybar"` to your Waybar modules and add the module defi
 ```jsonc
 "custom/limits-waybar": {
   "exec": "$HOME/.config/waybar/scripts/limits-waybar.sh",
-  "interval": 60,
+  "interval": 600,
   "return-type": "json",
   "format": "{}",
   "tooltip": true

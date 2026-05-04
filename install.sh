@@ -24,6 +24,11 @@ if [ ! -f "$HOME/.claude/.credentials.json" ]; then
     echo "Make sure you're logged into Claude Code (run 'claude' and complete OAuth login)."
 fi
 
+if [ ! -f "$HOME/.codex/auth.json" ]; then
+    echo "Warning: Codex ChatGPT auth not found at ~/.codex/auth.json"
+    echo "Make sure you're logged into Codex with ChatGPT auth (run 'codex login')."
+fi
+
 # Install the script and keep the legacy filename working for existing configs
 mkdir -p "$DEST_DIR"
 cp "$SCRIPT_DIR/limits-waybar.sh" "$DEST"
@@ -51,7 +56,7 @@ if [ -f "$CONFIG" ]; then
         cat << 'EOF'
   "custom/limits-waybar": {
     "exec": "$HOME/.config/waybar/scripts/limits-waybar.sh",
-    "interval": 300,
+    "interval": 600,
     "return-type": "json",
     "format": "{}",
     "tooltip": true

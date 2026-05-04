@@ -4,7 +4,10 @@ set -u
 
 CLAUDE_CREDENTIALS_FILE="${CLAUDE_CREDENTIALS_FILE:-$HOME/.claude/.credentials.json}"
 CLAUDE_CACHE_FILE="${CLAUDE_CACHE_FILE:-/tmp/limits-waybar-claude-cache.json}"
-CODEX_SESSIONS_DIR="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
+OPENAI_AUTH_FILE="${OPENAI_AUTH_FILE:-$HOME/.codex/auth.json}"
+OPENAI_USAGE_CACHE_FILE="${OPENAI_USAGE_CACHE_FILE:-/tmp/limits-waybar-openai-usage-cache.json}"
+OPENAI_USAGE_CACHE_TTL="${OPENAI_USAGE_CACHE_TTL:-600}"
+OPENAI_USAGE_URL="${OPENAI_USAGE_URL:-https://chatgpt.com/backend-api/wham/usage}"
 
 format_duration() {
     local diff_seconds="$1"
@@ -24,22 +27,50 @@ parse_iso_epoch() {
     local iso="$1"
     local normalized
 
-    normalized=$(printf "%s" "$iso" | sed -E 's/\.[0-9]+Z$/Z/; s/\+[0-9:]+$//')
+    normalized=$(printf "%s" "$iso" | sed -E 's/\.([0-9]+)(Z|[+-][0-9]{2}:[0-9]{2})$/\2/')
     date -d "$normalized" +%s 2>/dev/null \
         || date -jf "%Y-%m-%dT%H:%M:%SZ" "$normalized" +%s 2>/dev/null \
         || date -jf "%Y-%m-%dT%H:%M:%S" "$normalized" +%s 2>/dev/null
 }
 
+get_file_mtime() {
+    local file="$1"
+
+    stat -c%Y "$file" 2>/dev/null || stat -f%m "$file" 2>/dev/null || echo "0"
+}
+
+get_claude_cache_reset_epoch() {
+    local five_reset reset_epoch
+
+    if [ ! -f "$CLAUDE_CACHE_FILE" ]; then
+        return 1
+    fi
+
+    five_reset=$(jq -r '.five_hour.resets_at // empty' "$CLAUDE_CACHE_FILE" 2>/dev/null)
+    if [ -z "$five_reset" ] || [ "$five_reset" = "null" ]; then
+        return 1
+    fi
+
+    reset_epoch=$(parse_iso_epoch "$five_reset")
+    if [ -n "$reset_epoch" ]; then
+        printf "%s\n" "$reset_epoch"
+        return 0
+    fi
+
+    return 1
+}
+
 get_claude_limits() {
-    local refresh_needed cache_mtime now token response http_code body
-    local five_util five_reset week_util reset_epoch now_epoch time_till_reset
+    local refresh_needed cache_mtime token response http_code body
+    local five_util five_reset week_util reset_epoch now_epoch time_till_reset cache_reset_epoch
     local five_int week_int text tooltip
 
     refresh_needed=true
+    now_epoch=$(date +%s)
     if [ -f "$CLAUDE_CACHE_FILE" ]; then
-        cache_mtime=$(stat -c%Y "$CLAUDE_CACHE_FILE" 2>/dev/null || stat -f%m "$CLAUDE_CACHE_FILE" 2>/dev/null || echo "0")
-        now=$(date +%s)
-        if [ $((now - cache_mtime)) -lt 300 ]; then
+        cache_mtime=$(get_file_mtime "$CLAUDE_CACHE_FILE")
+        cache_reset_epoch=$(get_claude_cache_reset_epoch)
+        if [ $((now_epoch - cache_mtime)) -lt 300 ] && { [ -z "${cache_reset_epoch:-}" ] || [ "$cache_reset_epoch" -gt "$now_epoch" ]; }; then
             refresh_needed=false
         fi
     fi
@@ -66,6 +97,12 @@ get_claude_limits() {
         return 1
     fi
 
+    cache_reset_epoch=$(get_claude_cache_reset_epoch)
+    now_epoch=$(date +%s)
+    if [ -n "${cache_reset_epoch:-}" ] && [ "$cache_reset_epoch" -le "$now_epoch" ]; then
+        return 1
+    fi
+
     five_util=$(jq -r '.five_hour.utilization // 0' "$CLAUDE_CACHE_FILE" 2>/dev/null)
     five_reset=$(jq -r '.five_hour.resets_at // empty' "$CLAUDE_CACHE_FILE" 2>/dev/null)
     week_util=$(jq -r '.seven_day.utilization // 0' "$CLAUDE_CACHE_FILE" 2>/dev/null)
@@ -83,49 +120,63 @@ get_claude_limits() {
     week_int=$(printf "%.0f" "$week_util" 2>/dev/null || echo "0")
 
     if [ -n "$time_till_reset" ]; then
-        text="C${five_int}%:${time_till_reset}"
+        text="${five_int}%:${time_till_reset}"
         tooltip="Claude: 5h ${five_int}% (resets in ${time_till_reset}), 7d ${week_int}%"
     else
-        text="C${five_int}%"
+        text="${five_int}%"
         tooltip="Claude: 5h ${five_int}%, 7d ${week_int}%"
     fi
 
     printf "%s\n%s\n" "$text" "$tooltip"
 }
 
-get_latest_codex_rate_limit_json() {
-    local session_file match
+get_codex_limits() {
+    local refresh_needed cache_mtime token account_id response http_code body
+    local five_util week_util five_reset now_epoch time_till_reset
+    local five_int week_int text tooltip
 
-    if [ ! -d "$CODEX_SESSIONS_DIR" ]; then
+    refresh_needed=true
+    now_epoch=$(date +%s)
+    if [ -f "$OPENAI_USAGE_CACHE_FILE" ]; then
+        cache_mtime=$(get_file_mtime "$OPENAI_USAGE_CACHE_FILE")
+        if [ $((now_epoch - cache_mtime)) -lt "$OPENAI_USAGE_CACHE_TTL" ]; then
+            refresh_needed=false
+        fi
+    fi
+
+    if [ "$refresh_needed" = true ]; then
+        token=""
+        account_id=""
+        if [ -f "$OPENAI_AUTH_FILE" ]; then
+            token=$(jq -r '.tokens.access_token // empty' "$OPENAI_AUTH_FILE" 2>/dev/null)
+            account_id=$(jq -r '.tokens.account_id // empty' "$OPENAI_AUTH_FILE" 2>/dev/null)
+        fi
+        if [ -n "$token" ] && [ "$token" != "null" ]; then
+            if [ -n "$account_id" ] && [ "$account_id" != "null" ]; then
+                response=$(curl -s -w "\n%{http_code}" \
+                    -H "Authorization: Bearer $token" \
+                    -H "ChatGPT-Account-ID: $account_id" \
+                    "$OPENAI_USAGE_URL" 2>/dev/null)
+            else
+                response=$(curl -s -w "\n%{http_code}" \
+                    -H "Authorization: Bearer $token" \
+                    "$OPENAI_USAGE_URL" 2>/dev/null)
+            fi
+            http_code=$(printf "%s\n" "$response" | tail -1)
+            body=$(printf "%s\n" "$response" | sed '$d')
+            if [ "$http_code" = "200" ] && printf "%s\n" "$body" | jq -e '.rate_limit.primary_window' >/dev/null 2>&1; then
+                printf "%s\n" "$body" > "$OPENAI_USAGE_CACHE_FILE.tmp" && mv "$OPENAI_USAGE_CACHE_FILE.tmp" "$OPENAI_USAGE_CACHE_FILE" 2>/dev/null
+            fi
+        fi
+    fi
+
+    if [ ! -f "$OPENAI_USAGE_CACHE_FILE" ]; then
         return 1
     fi
 
-    while IFS= read -r session_file; do
-        match=$(jq -rc 'select(.payload.rate_limits.limit_id == "codex") | .payload.rate_limits' "$session_file" 2>/dev/null | tail -n 1)
-        if [ -n "$match" ]; then
-            printf "%s\n" "$match"
-            return 0
-        fi
-
-        match=$(jq -rc 'select((.payload.rate_limits.limit_id // "") | startswith("codex")) | .payload.rate_limits' "$session_file" 2>/dev/null | tail -n 1)
-        if [ -n "$match" ]; then
-            printf "%s\n" "$match"
-            return 0
-        fi
-    done < <(find "$CODEX_SESSIONS_DIR" -type f -name '*.jsonl' 2>/dev/null | sort -r)
-
-    return 1
-}
-
-get_codex_limits() {
-    local rate_limits_json five_util week_util five_reset now_epoch time_till_reset
-    local five_int week_int text tooltip
-
-    rate_limits_json=$(get_latest_codex_rate_limit_json) || return 1
-
-    five_util=$(printf "%s\n" "$rate_limits_json" | jq -r '.primary.used_percent // 0' 2>/dev/null)
-    week_util=$(printf "%s\n" "$rate_limits_json" | jq -r '.secondary.used_percent // 0' 2>/dev/null)
-    five_reset=$(printf "%s\n" "$rate_limits_json" | jq -r '.primary.resets_at // empty' 2>/dev/null)
+    five_util=$(jq -r '.rate_limit.primary_window.used_percent // 0' "$OPENAI_USAGE_CACHE_FILE" 2>/dev/null)
+    week_util=$(jq -r '.rate_limit.secondary_window.used_percent // 0' "$OPENAI_USAGE_CACHE_FILE" 2>/dev/null)
+    five_reset=$(jq -r '.rate_limit.primary_window.reset_at // empty' "$OPENAI_USAGE_CACHE_FILE" 2>/dev/null)
 
     time_till_reset=""
     if [ -n "$five_reset" ] && [ "$five_reset" != "null" ]; then
@@ -137,10 +188,10 @@ get_codex_limits() {
     week_int=$(printf "%.0f" "$week_util" 2>/dev/null || echo "0")
 
     if [ -n "$time_till_reset" ]; then
-        text="O${five_int}%:${time_till_reset}"
+        text="${five_int}%:${time_till_reset}"
         tooltip="Codex: 5h ${five_int}% (resets in ${time_till_reset}), 7d ${week_int}%"
     else
-        text="O${five_int}%"
+        text="${five_int}%"
         tooltip="Codex: 5h ${five_int}%, 7d ${week_int}%"
     fi
 
